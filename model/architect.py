@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import torch.nn as nn
 from torch.autograd import Variable
 
 
@@ -9,24 +8,27 @@ def _concat(xs):
 
 
 class Architect(object):
-
     def __init__(self, model, args):
         self.network_momentum = args.momentum
         self.network_weight_decay = args.weight_decay
-        self.model = model
+        self.model = model  # 指整个神经网络架构
         self.optimizer = torch.optim.Adam(self.model.arch_parameters(),
                                           lr=args.arch_learning_rate, betas=(0.5, 0.999),
-                                          weight_decay=args.arch_weight_decay)
+                                          weight_decay=args.weight_decay)
 
     def _compute_unrolled_model(self, input, target, eta, network_optimizer):
         loss = self.model._loss(input, target)
+        # 提取架构权重并将其连接为一个一维张量
         theta = _concat(self.model.parameters()).data
+        # 若有动量项，则获取；若没有，则都初始化为0
         try:
-            moment = _concat(network_optimizer.state[v]['momentum_buffer'] for v in self.model.parameters()).mul_(
-                self.network_momentum)
+            moment = _concat(network_optimizer.state[v]['momentum_buffer'] for v in
+                             self.model.parameters()).mul_(self.network_momentum)
         except:
             moment = torch.zeros_like(theta)
+        # 计算权重梯度
         dtheta = _concat(torch.autograd.grad(loss, self.model.parameters())).data + self.network_weight_decay * theta
+        # 更新权重，构造展开模型
         unrolled_model = self._construct_model_from_theta(theta.sub(eta, moment + dtheta))
         return unrolled_model
 
@@ -35,7 +37,7 @@ class Architect(object):
         if unrolled:
             self._backward_step_unrolled(input_train, target_train, input_valid, target_valid, eta, network_optimizer)
         else:
-            self._backward_step(input_valid, target_valid)
+            self._backward_step_unrolled(input_valid, target_valid)
         self.optimizer.step()
 
     def _backward_step(self, input_valid, target_valid):
@@ -56,7 +58,7 @@ class Architect(object):
 
         for v, g in zip(self.model.arch_parameters(), dalpha):
             if v.grad is None:
-                v.grad = Variable(g.data)
+                v.grad = torch.tensor(g.data)
             else:
                 v.grad.data.copy_(g.data)
 
@@ -68,7 +70,7 @@ class Architect(object):
         for k, v in self.model.named_parameters():
             v_length = np.prod(v.size())
             params[k] = theta[offset: offset + v_length].view(v.size())
-            offset += v_length
+            offset += v.length
 
         assert offset == len(theta)
         model_dict.update(params)
